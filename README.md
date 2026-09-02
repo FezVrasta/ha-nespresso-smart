@@ -74,15 +74,30 @@ install "Nespresso Smart" and restart.
 
 ## Set it up
 
-Your machine is locked to a single **pairing key**. If you've ever used the
-Nespresso phone app with it, that key is saved in your Nespresso account. Grab it
-from there and both the app and Home Assistant keep working.
+Home Assistant usually spots the machine on its own, so look for a **Nespresso
+Smart** discovery card on the Devices & Services page. If it doesn't appear, go
+to **Settings → Devices & Services → Add Integration** and search for it.
 
-### 1. Get your pairing key
+Pick your machine and you'll be asked for a **pairing key**. What to put there
+depends on one thing:
 
-Log in at **[nespresso.com](https://www.nespresso.com/)** in your normal browser.
-Then open the developer console on that page (`⌥⌘J` on Mac, `Ctrl+Shift+J` on
-Windows/Linux) and paste this in:
+**Never paired this machine with the Nespresso phone app?**
+Leave the box **empty** and submit. Home Assistant creates its own key and claims
+the machine. That's it, you're done.
+
+**Already paired it with the app?**
+The machine only stores one key, and the app has it. Rather than resetting
+anything, [recover that same key](#recovering-your-pairing-key) and paste it in.
+The app carries on working.
+
+### Recovering your pairing key
+
+Only needed if the phone app has already paired with your machine.
+
+Your key is saved in your Nespresso account. Log in at
+**[nespresso.com](https://www.nespresso.com/)** in your normal browser, open the
+developer console on that page (`⌥⌘J` on Mac, `Ctrl+Shift+J` on Windows/Linux)
+and paste this in:
 
 ```js
 const acct = await (await fetch('/ecapi/identityprovider/v1/web-accounts/me',
@@ -98,27 +113,15 @@ console.table(machines.map(m => ({
 ```
 
 You'll get a table of your machines. Copy the `pairingKey`, which is 32
-characters, something like `A1B2C3D4E5F60718293A4B5C6D7E8F90`.
+characters, something like `A1B2C3D4E5F60718293A4B5C6D7E8F90`, and paste it into
+Home Assistant.
 
 Do this in a real browser, not `curl`. Nespresso's API turns away scripted
 clients, but your logged-in browser sails through.
 
-### 2. Add the integration
-
-Home Assistant usually spots the machine on its own, so look for a **Nespresso
-Smart** discovery card on the Devices & Services page. If it doesn't appear, go
-to **Settings → Devices & Services → Add Integration** and search for it.
-
-Pick your machine, paste the pairing key, submit. Done.
-
-### Never used the phone app?
-
-Then there's no key to recover. Leave the pairing key box **empty** and Home
-Assistant will create one and claim the machine.
-
-If the machine *is* paired to the app but you can't get into the account, you can
-factory-reset the machine (see its manual) and then use the empty-box route. Be
-aware that removes it from the phone app.
+**Can't get into the account?** You can factory-reset the machine instead (see
+its manual) and then use the empty-box route above. Be aware that removes it from
+the phone app.
 
 ## Automation ideas
 
@@ -164,8 +167,9 @@ currently connected to your phone, since only one device can talk to it at a
 time. If it's far from your HA box, add a Bluetooth proxy. It can also take a
 minute after a restart for Bluetooth discovery to catch up.
 
-**"This machine is already paired."** You left the key box empty on a machine
-that's already claimed. Recover the key from your account (step 1 above).
+**"This machine is already paired."** You left the key box empty on a machine the
+phone app has already claimed. [Recover the key](#recovering-your-pairing-key)
+from your account and paste that in instead.
 
 **Pairing failed, or it can't connect.** Usually range, or a busy machine. Move
 it closer to a proxy, or power-cycle the machine and retry.
