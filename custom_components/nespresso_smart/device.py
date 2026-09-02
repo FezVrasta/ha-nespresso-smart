@@ -80,6 +80,14 @@ class VertuoTimeoutError(VertuoError):
     """A BLE operation did not complete in time."""
 
 
+class VertuoNotBondedError(VertuoError):
+    """The link is not encrypted yet, so the machine refused the write.
+
+    Transient: the refusal itself prompts the stack to bond, so retrying the
+    connection generally succeeds. See VertuoDevice._bond.
+    """
+
+
 @dataclass
 class VertuoData:
     """One poll's worth of machine data."""
@@ -108,8 +116,8 @@ class VertuoDevice:
         self._disconnected_callback = disconnected_callback
         self._status_callback: Callable[[MachineStatus], None] | None = None
         self._notifying = False
-        # Cleared once bonding has proved to be unsupported or unanswered, so
-        # every later reconnect skips it instead of stalling again.
+        # Cleared only once the backend says it cannot bond at all; a bond
+        # that merely failed this time is worth attempting again. See _bond.
         self._try_bonding = True
 
         # Cached: these never change while connected.
@@ -216,19 +224,25 @@ class VertuoDevice:
         await self._authenticate()
 
     async def _bond(self) -> None:
-        """Try to establish an SMP bond, but never depend on one.
+        """Establish an SMP bond, without ever blocking on one.
 
-        bleak only implements pairing on BlueZ and WinRT; on macOS it happens
-        implicitly on first protected read, and on BlueZ the kernel raises a
-        bond by itself if a characteristic turns out to need one. So an
-        explicit bond is an optimisation, not a prerequisite -- and on BlueZ
-        it is a liability: ``Pair()`` blocks until bluetoothd resolves the
-        request, which for a machine that ignores the SMP exchange, or on a
-        Home Assistant install with no pairing agent registered, is never.
+        The bond is real, not decorative: on BlueZ the CMID write comes back
+        ``[org.bluez.Error.NotPermitted] Not paired`` until the link is
+        encrypted. But it must not be a hard gate either, for two reasons.
 
-        Bound it, treat any failure as benign, and stop trying on this device
-        once it has failed once. If a bond really was required, the read in
-        _authenticate() fails with a clear error instead of hanging.
+        It can hang. ``Pair()`` is a D-Bus call that returns when bluetoothd
+        resolves the request, and bluetoothd has no deadline of its own: a
+        machine that ignores the SMP exchange, or an install with no pairing
+        agent registered, leaves it pending forever.
+
+        And it can be unnecessary. A failed write is itself enough to make
+        BlueZ raise the bond, so pressing on and letting _authenticate() fail
+        is a *recovery path*, not a dead end -- the caller retries and the
+        second attempt succeeds. Failing loudly beats hanging silently.
+
+        Only NotImplementedError disables future attempts: that is a fixed
+        property of the backend (macOS bonds implicitly instead). Everything
+        else may well succeed on the next connection, so keep trying.
         """
         assert self._client is not None
         if not self._try_bonding:
@@ -239,9 +253,9 @@ class VertuoDevice:
             self._try_bonding = False
             _LOGGER.debug("%s: pair() unsupported on this backend, skipping", self.name)
         except VertuoTimeoutError:
-            self._try_bonding = False
             _LOGGER.debug(
-                "%s: bonding did not complete within %.0fs, continuing without it",
+                "%s: bonding did not complete within %.0fs, continuing anyway -- "
+                "the write below may prompt the stack to bond",
                 self.name,
                 BOND_TIMEOUT,
             )
@@ -250,15 +264,33 @@ class VertuoDevice:
             # and the backends disagree about which exception type they use.
             _LOGGER.debug("%s: pair() returned %s (continuing)", self.name, err)
 
+    async def _write(self, char: str, data: bytes, what: str) -> None:
+        """Write a characteristic, naming BlueZ's unencrypted-link refusal.
+
+        Until the link is bonded, BlueZ answers a protected write with
+        ``[org.bluez.Error.NotPermitted] Not paired``. That is worth its own
+        exception type because it is transient -- the refusal is what prompts
+        the bond, so the next connection attempt succeeds.
+        """
+        assert self._client is not None
+        try:
+            await self._bounded(
+                self._client.write_gatt_char(char, data, response=True),
+                GATT_TIMEOUT,
+                what,
+            )
+        except BleakError as err:
+            if "not paired" in str(err).lower():
+                raise VertuoNotBondedError(
+                    f"{what} needs a bonded connection: {err}"
+                ) from err
+            raise
+
     async def _authenticate(self) -> None:
         """Write the pairing secret to the CMID characteristic."""
         assert self._client is not None
         try:
-            await self._bounded(
-                self._client.write_gatt_char(CHAR_CMID, self._secret, response=True),
-                GATT_TIMEOUT,
-                "writing the pairing key",
-            )
+            await self._write(CHAR_CMID, self._secret, "writing the pairing key")
         except BleakError as err:
             raise VertuoAuthError(f"writing pairing key failed: {err}") from err
 
@@ -321,16 +353,8 @@ class VertuoDevice:
             return
 
         _LOGGER.debug("%s: onboarding (state was %s)", self.name, state.name)
-        await self._bounded(
-            self._client.write_gatt_char(CHAR_TX_LEVEL, bytes([1]), response=True),
-            GATT_TIMEOUT,
-            "setting the TX level",
-        )
-        await self._bounded(
-            self._client.write_gatt_char(CHAR_CMID, self._secret, response=True),
-            GATT_TIMEOUT,
-            "writing the pairing key",
-        )
+        await self._write(CHAR_TX_LEVEL, bytes([1]), "setting the TX level")
+        await self._write(CHAR_CMID, self._secret, "writing the pairing key")
         await asyncio.sleep(2)
 
         state = await self.read_pairing_state()
@@ -455,10 +479,8 @@ class VertuoDevice:
                 water_hardness=level,
                 standby_time=current.standby_time,
             )
-            await self._bounded(
-                self._client.write_gatt_char(
-                    CHAR_USER_SETTINGS, encode_user_settings(updated), response=True
-                ),
-                GATT_TIMEOUT,
+            await self._write(
+                CHAR_USER_SETTINGS,
+                encode_user_settings(updated),
                 "writing user settings",
             )

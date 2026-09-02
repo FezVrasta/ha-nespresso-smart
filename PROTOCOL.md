@@ -121,11 +121,18 @@ auth value is "a 16 character hex string that starts with 8". The Original line
 
 ### 3.3 Onboarding sequence (machine not yet bound)
 
-1. Connect, and perform a BLE (SMP) bond. The app does this because Android
-   wants it; it is **not** a prerequisite. Neither CMID nor CMIDType requires
-   encryption, and where a bond genuinely is needed the host stack raises one
-   on demand. Do not block on it: BlueZ's `Pair()` never returns when the
-   machine ignores the SMP request or no pairing agent is registered.
+1. Connect, and perform a BLE (SMP) bond. CMID is a protected characteristic:
+   until the link is encrypted, BlueZ answers the write with
+   `[org.bluez.Error.NotPermitted] Not paired`. (CMIDType at step 2 reads
+   fine unbonded.)
+
+   Do not *block* on the bond, though. BlueZ's `Pair()` is a D-Bus call with
+   no deadline of its own and never returns when the machine ignores the SMP
+   request or no pairing agent is registered. It is also frequently
+   unnecessary to wait for: the refused write is itself what prompts the
+   stack to bond, so a first attempt that fails `NotPermitted` and a second
+   that succeeds is the normal path on Home Assistant OS. Bound the bond,
+   press on regardless, and retry the connection.
 2. Read CMIDType `06AA3A51`. Value `0`/`1` = not bound, `2` = bound (`FINAL`),
    `3` = undefined. (`MachineStatus.PairingKeyState`.)
 3. If not bound:

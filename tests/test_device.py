@@ -109,10 +109,15 @@ def test_hanging_bond_does_not_block_connect(monkeypatch: pytest.MonkeyPatch) ->
     assert [char for char, _ in client.writes] == [device.CHAR_CMID]
 
 
-def test_bonding_is_not_retried_after_it_hangs(
+def test_bonding_is_retried_on_a_later_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One stalled bond is enough: later reconnects must not pay for it again."""
+    """A bond that stalled once may well succeed next time, so keep trying.
+
+    The machine genuinely needs the bond -- BlueZ refuses the pairing-key
+    write without one -- so giving up on it permanently would strand the
+    integration.
+    """
     client = FakeClient(hangs={"pair"})
     monkeypatch.setattr(device, "BOND_TIMEOUT", 0.05)
     dev = _make_device(monkeypatch, client)
@@ -124,7 +129,55 @@ def test_bonding_is_not_retried_after_it_hangs(
 
     asyncio.run(scenario())
 
+    assert client.pair_calls == 2
+
+
+def test_backend_without_pairing_is_only_probed_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NotImplementedError is a fixed property of the backend, so latch it."""
+    client = FakeClient()
+
+    async def unsupported() -> None:
+        client.pair_calls += 1
+        raise NotImplementedError
+
+    client.pair = unsupported  # type: ignore[method-assign]
+    dev = _make_device(monkeypatch, client)
+
+    async def scenario() -> None:
+        await dev.connect()
+        client.is_connected = False
+        await dev.connect()
+
+    asyncio.run(scenario())
+
     assert client.pair_calls == 1
+
+
+def test_unbonded_write_refusal_gets_its_own_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BlueZ's "Not paired" refusal is transient and must be distinguishable.
+
+    Reported as a plain auth failure it would read as "wrong pairing key",
+    which is exactly the wrong thing to tell someone whose key is fine.
+    """
+    from bleak.exc import BleakError
+
+    client = FakeClient()
+
+    async def refuse(char: str, data: bytes, response: bool) -> None:
+        raise BleakError("[org.bluez.Error.NotPermitted] Not paired")
+
+    client.write_gatt_char = refuse  # type: ignore[method-assign]
+    dev = _make_device(monkeypatch, client)
+
+    async def scenario() -> None:
+        with pytest.raises(device.VertuoNotBondedError):
+            await dev.connect()
+
+    asyncio.run(scenario())
 
 
 def test_hanging_read_raises_rather_than_stalling(

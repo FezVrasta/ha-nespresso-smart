@@ -16,7 +16,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS
 
 from .const import CONF_PAIRING_SEED, DOMAIN, SVC_IDENTITY
-from .device import VertuoDevice, VertuoTimeoutError
+from .device import VertuoDevice, VertuoNotBondedError, VertuoTimeoutError
 from .protocol import (
     BOUND_STATES,
     PairingKeyState,
@@ -164,17 +164,38 @@ class VertuoConfigFlow(ConfigFlow, domain=DOMAIN):
         device = VertuoDevice(ble_device, seed)
         try:
             async with asyncio.timeout(PAIRING_TIMEOUT):
-                await device.connect()
-                await device.update()
+                return await self._authenticate_with_seed(device)
         except (TimeoutError, VertuoTimeoutError) as err:
             _LOGGER.debug("Authenticating with supplied seed timed out: %s", err)
             return "timeout"
-        except Exception as err:
-            _LOGGER.debug("Authenticating with supplied seed failed: %s", err)
-            return "auth_failed"
         finally:
             await device.disconnect()
-        return None
+
+    @staticmethod
+    async def _authenticate_with_seed(device: VertuoDevice) -> str | None:
+        """Connect and read once, retrying a refused-because-unbonded write.
+
+        On BlueZ the first attempt against a machine the host has not bonded
+        with is *expected* to fail: the pairing-key write comes back "not
+        paired", and it is that refusal which prompts the bond. The
+        coordinator gets this for free from Home Assistant's setup retry; the
+        config flow only ever tries once, so it has to retry here or it would
+        reject a perfectly good seed.
+        """
+        for attempt in (1, 2):
+            try:
+                await device.connect()
+                await device.update()
+                return None
+            except VertuoNotBondedError as err:
+                _LOGGER.debug("Seed attempt %d needs a bond first: %s", attempt, err)
+                await device.disconnect()
+            except (TimeoutError, VertuoTimeoutError):
+                raise  # reported as "timeout" by the caller
+            except Exception as err:
+                _LOGGER.debug("Authenticating with supplied seed failed: %s", err)
+                return "auth_failed"
+        return "not_bonded"
 
     async def _try_onboard(self, seed: str) -> str | None:
         """Bind an unbound machine. Returns an error key or None."""
@@ -190,7 +211,13 @@ class VertuoConfigFlow(ConfigFlow, domain=DOMAIN):
             # A deadline for the whole attempt, on top of the per-operation
             # ones in VertuoDevice: whatever goes wrong, the form comes back.
             async with asyncio.timeout(PAIRING_TIMEOUT):
-                return await self._onboard(device)
+                # Same expected first-attempt bond refusal as _try_seed.
+                for attempt in (1, 2):
+                    result = await self._onboard(device, attempt)
+                    if result != "not_bonded":
+                        return result
+                    await device.disconnect()
+                return "not_bonded"
         except (TimeoutError, VertuoTimeoutError) as err:
             _LOGGER.debug("Onboarding timed out: %s", err)
             return "timeout"
@@ -198,15 +225,14 @@ class VertuoConfigFlow(ConfigFlow, domain=DOMAIN):
             await device.disconnect()
 
     @staticmethod
-    async def _onboard(device: VertuoDevice) -> str | None:
-        """Run the onboarding sequence. Returns an error key or None."""
+    async def _onboard(device: VertuoDevice, attempt: int) -> str | None:
+        """Run the onboarding sequence once. Returns an error key or None."""
         try:
             # Connect without authenticating so the pairing state can be read
             # before anything is written to the machine.
             await device.connect_unauthenticated()
-        except (TimeoutError, VertuoTimeoutError) as err:
-            _LOGGER.debug("Connecting for onboarding timed out: %s", err)
-            return "timeout"
+        except (TimeoutError, VertuoTimeoutError):
+            raise  # reported as "timeout" by the caller
         except Exception as err:
             _LOGGER.debug("Connecting for onboarding failed: %s", err)
             return "cannot_connect"
@@ -221,9 +247,11 @@ class VertuoConfigFlow(ConfigFlow, domain=DOMAIN):
             await device.onboard()
             await device.authenticate()
             await device.update()
-        except (TimeoutError, VertuoTimeoutError) as err:
-            _LOGGER.debug("Onboarding timed out: %s", err)
-            return "timeout"
+        except VertuoNotBondedError as err:
+            _LOGGER.debug("Onboard attempt %d needs a bond first: %s", attempt, err)
+            return "not_bonded"
+        except (TimeoutError, VertuoTimeoutError):
+            raise  # reported as "timeout" by the caller
         except Exception as err:
             _LOGGER.debug("Onboarding failed: %s", err)
             return "onboard_failed"
