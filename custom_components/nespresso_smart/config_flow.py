@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -15,7 +16,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS
 
 from .const import CONF_PAIRING_SEED, DOMAIN, SVC_IDENTITY
-from .device import VertuoDevice
+from .device import VertuoDevice, VertuoTimeoutError
 from .protocol import (
     BOUND_STATES,
     PairingKeyState,
@@ -25,6 +26,12 @@ from .protocol import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+#: Overall deadline for one pairing attempt, covering connect, bond and every
+#: read and write. The individual operations are bounded too; this is the
+#: backstop that guarantees the form always comes back with an answer rather
+#: than leaving the user staring at a spinner.
+PAIRING_TIMEOUT = 90.0
 
 
 def _is_vertuo(info: BluetoothServiceInfoBleak) -> bool:
@@ -156,8 +163,12 @@ class VertuoConfigFlow(ConfigFlow, domain=DOMAIN):
 
         device = VertuoDevice(ble_device, seed)
         try:
-            await device.connect()
-            await device.update()
+            async with asyncio.timeout(PAIRING_TIMEOUT):
+                await device.connect()
+                await device.update()
+        except (TimeoutError, VertuoTimeoutError) as err:
+            _LOGGER.debug("Authenticating with supplied seed timed out: %s", err)
+            return "timeout"
         except Exception as err:
             _LOGGER.debug("Authenticating with supplied seed failed: %s", err)
             return "auth_failed"
@@ -176,9 +187,26 @@ class VertuoConfigFlow(ConfigFlow, domain=DOMAIN):
 
         device = VertuoDevice(ble_device, seed)
         try:
+            # A deadline for the whole attempt, on top of the per-operation
+            # ones in VertuoDevice: whatever goes wrong, the form comes back.
+            async with asyncio.timeout(PAIRING_TIMEOUT):
+                return await self._onboard(device)
+        except (TimeoutError, VertuoTimeoutError) as err:
+            _LOGGER.debug("Onboarding timed out: %s", err)
+            return "timeout"
+        finally:
+            await device.disconnect()
+
+    @staticmethod
+    async def _onboard(device: VertuoDevice) -> str | None:
+        """Run the onboarding sequence. Returns an error key or None."""
+        try:
             # Connect without authenticating so the pairing state can be read
             # before anything is written to the machine.
             await device.connect_unauthenticated()
+        except (TimeoutError, VertuoTimeoutError) as err:
+            _LOGGER.debug("Connecting for onboarding timed out: %s", err)
+            return "timeout"
         except Exception as err:
             _LOGGER.debug("Connecting for onboarding failed: %s", err)
             return "cannot_connect"
@@ -193,9 +221,10 @@ class VertuoConfigFlow(ConfigFlow, domain=DOMAIN):
             await device.onboard()
             await device.authenticate()
             await device.update()
+        except (TimeoutError, VertuoTimeoutError) as err:
+            _LOGGER.debug("Onboarding timed out: %s", err)
+            return "timeout"
         except Exception as err:
             _LOGGER.debug("Onboarding failed: %s", err)
             return "onboard_failed"
-        finally:
-            await device.disconnect()
         return None

@@ -24,6 +24,7 @@
       "invalid_seed": "That does not look like a pairing seed. It must be at least 15 hexadecimal characters (normally 32).",
       "not_found": "The machine is not in range of any Bluetooth adapter or proxy.",
       "cannot_connect": "Could not connect to the machine. Make sure it is powered on and not currently connected to the phone app.",
+      "timeout": "The machine stopped responding part-way through. Close the Nespresso phone app so it is not holding the connection, make sure the machine is awake and near the Bluetooth adapter, then try again.",
       "auth_failed": "The machine rejected that pairing seed. It is bound to a different key.",
       "already_paired": "This machine is already paired, most likely with the Nespresso phone app. Recover its existing pairing key from your Nespresso account (see the README) and paste it above; no reset needed. Factory-resetting the machine also works, but unpairs the app.",
       "onboard_failed": "Pairing failed. Try moving the machine closer to the Bluetooth adapter, or power-cycle it and retry."

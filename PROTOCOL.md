@@ -121,7 +121,11 @@ auth value is "a 16 character hex string that starts with 8". The Original line
 
 ### 3.3 Onboarding sequence (machine not yet bound)
 
-1. Connect, and perform a BLE (SMP) bond.
+1. Connect, and perform a BLE (SMP) bond. The app does this because Android
+   wants it; it is **not** a prerequisite. Neither CMID nor CMIDType requires
+   encryption, and where a bond genuinely is needed the host stack raises one
+   on demand. Do not block on it: BlueZ's `Pair()` never returns when the
+   machine ignores the SMP request or no pairing agent is registered.
 2. Read CMIDType `06AA3A51`. Value `0`/`1` = not bound, `2` = bound (`FINAL`),
    `3` = undefined. (`MachineStatus.PairingKeyState`.)
 3. If not bound:

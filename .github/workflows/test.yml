@@ -26,7 +26,7 @@ jobs:
         run: ruff format --check custom_components tools tests
 
   test:
-    name: Protocol codec
+    name: Protocol codec and BLE transport
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,9 +35,10 @@ jobs:
         with:
           python-version: "3.13"
 
-      - run: pip install pytest
-
       # protocol.py is deliberately free of Home Assistant and bleak imports,
-      # so the codec tests need no extra dependencies.
+      # so the codec tests need nothing but pytest. The transport tests drive
+      # device.py against a fake client, which does need bleak importable.
+      - run: pip install pytest bleak bleak-retry-connector
+
       - name: Run tests
         run: pytest tests -q

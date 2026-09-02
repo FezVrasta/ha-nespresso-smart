@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
+from typing import Any, TypeVar
 
 from bleak import BleakClient
 from bleak.backends.device import BLEDevice
@@ -46,6 +47,22 @@ CHAR_USER_SETTINGS = "06aa3a44-f22a-11e3-9daa-0002a5d5c51b"
 
 DEFAULT_TIMEOUT = 20.0
 
+#: How long to wait for an SMP bond. BlueZ's ``Pair()`` is a D-Bus call with no
+#: timeout of its own: if the machine never answers the pairing request, or no
+#: pairing agent is registered (Home Assistant does not register one), the call
+#: never returns. Bonding is best-effort, so give it a short leash.
+BOND_TIMEOUT = 10.0
+
+#: How long to wait for a single GATT read or write. Same reasoning: on BlueZ a
+#: request the machine ignores leaves the call pending forever.
+GATT_TIMEOUT = 15.0
+
+#: How long to wait for a disconnect before giving up on it. This runs in
+#: ``finally`` blocks, so it must not be the thing that hangs.
+DISCONNECT_TIMEOUT = 10.0
+
+_T = TypeVar("_T")
+
 
 class VertuoError(Exception):
     """Base error for this integration."""
@@ -57,6 +74,10 @@ class VertuoAuthError(VertuoError):
 
 class VertuoNotBoundError(VertuoError):
     """The machine has no pairing key and onboarding was not requested."""
+
+
+class VertuoTimeoutError(VertuoError):
+    """A BLE operation did not complete in time."""
 
 
 @dataclass
@@ -87,6 +108,9 @@ class VertuoDevice:
         self._disconnected_callback = disconnected_callback
         self._status_callback: Callable[[MachineStatus], None] | None = None
         self._notifying = False
+        # Cleared once bonding has proved to be unsupported or unanswered, so
+        # every later reconnect skips it instead of stalling again.
+        self._try_bonding = True
 
         # Cached: these never change while connected.
         self._info: MachineInfo | None = None
@@ -117,6 +141,27 @@ class VertuoDevice:
     ) -> None:
         """Register a callback fired on every MachineStatus notification."""
         self._status_callback = callback
+
+    # --- timeouts --------------------------------------------------------
+
+    async def _bounded(
+        self,
+        operation: Coroutine[Any, Any, _T],
+        timeout: float,
+        what: str,
+    ) -> _T:
+        """Await one BLE operation, turning a stuck one into an error.
+
+        Nothing below us imposes a deadline: bleak hands BlueZ requests to
+        D-Bus and waits for a reply that a machine which has stopped answering
+        will never send. Unbounded, that surfaces as a config flow spinner
+        that never resolves and a coordinator refresh that never completes.
+        """
+        try:
+            async with asyncio.timeout(timeout):
+                return await operation
+        except TimeoutError as err:
+            raise VertuoTimeoutError(f"{what} timed out after {timeout:.0f}s") from err
 
     # --- connection ------------------------------------------------------
 
@@ -171,32 +216,59 @@ class VertuoDevice:
         await self._authenticate()
 
     async def _bond(self) -> None:
-        """Establish an SMP bond.
+        """Try to establish an SMP bond, but never depend on one.
 
-        The machine requires bonding before it will expose the protected
-        characteristics. bleak only implements this on BlueZ and WinRT; on
-        macOS pairing happens implicitly on first protected read.
+        bleak only implements pairing on BlueZ and WinRT; on macOS it happens
+        implicitly on first protected read, and on BlueZ the kernel raises a
+        bond by itself if a characteristic turns out to need one. So an
+        explicit bond is an optimisation, not a prerequisite -- and on BlueZ
+        it is a liability: ``Pair()`` blocks until bluetoothd resolves the
+        request, which for a machine that ignores the SMP exchange, or on a
+        Home Assistant install with no pairing agent registered, is never.
+
+        Bound it, treat any failure as benign, and stop trying on this device
+        once it has failed once. If a bond really was required, the read in
+        _authenticate() fails with a clear error instead of hanging.
         """
         assert self._client is not None
+        if not self._try_bonding:
+            return
         try:
-            await self._client.pair()
+            await self._bounded(self._client.pair(), BOND_TIMEOUT, "bonding")
         except NotImplementedError:
+            self._try_bonding = False
             _LOGGER.debug("%s: pair() unsupported on this backend, skipping", self.name)
-        except BleakError as err:
-            # "Already paired" and friends are benign.
+        except VertuoTimeoutError:
+            self._try_bonding = False
+            _LOGGER.debug(
+                "%s: bonding did not complete within %.0fs, continuing without it",
+                self.name,
+                BOND_TIMEOUT,
+            )
+        except Exception as err:
+            # "Already paired", "no agent available" and friends are benign,
+            # and the backends disagree about which exception type they use.
             _LOGGER.debug("%s: pair() returned %s (continuing)", self.name, err)
 
     async def _authenticate(self) -> None:
         """Write the pairing secret to the CMID characteristic."""
         assert self._client is not None
         try:
-            await self._client.write_gatt_char(CHAR_CMID, self._secret, response=True)
+            await self._bounded(
+                self._client.write_gatt_char(CHAR_CMID, self._secret, response=True),
+                GATT_TIMEOUT,
+                "writing the pairing key",
+            )
         except BleakError as err:
             raise VertuoAuthError(f"writing pairing key failed: {err}") from err
 
         # Prove it worked: MachineStatus is only readable once authenticated.
         try:
-            await self._client.read_gatt_char(CHAR_MACHINE_STATUS)
+            await self._bounded(
+                self._client.read_gatt_char(CHAR_MACHINE_STATUS),
+                GATT_TIMEOUT,
+                "reading MachineStatus",
+            )
         except BleakError as err:
             raise VertuoAuthError(
                 "machine rejected our pairing key -- it is most likely bound to "
@@ -207,8 +279,12 @@ class VertuoDevice:
         async with self._lock:
             if self._client is not None:
                 try:
-                    await self._client.disconnect()
-                except BleakError as err:
+                    await self._bounded(
+                        self._client.disconnect(),
+                        DISCONNECT_TIMEOUT,
+                        "disconnecting",
+                    )
+                except (BleakError, VertuoTimeoutError) as err:
                     _LOGGER.debug("%s: error on disconnect: %s", self.name, err)
                 self._client = None
             self._notifying = False
@@ -219,7 +295,11 @@ class VertuoDevice:
         """Read CMIDType. Readable without authentication."""
         if self._client is None:
             raise VertuoError("not connected")
-        data = await self._client.read_gatt_char(CHAR_CMID_TYPE)
+        data = await self._bounded(
+            self._client.read_gatt_char(CHAR_CMID_TYPE),
+            GATT_TIMEOUT,
+            "reading the pairing state",
+        )
         return decode_pairing_key_state(data)
 
     @staticmethod
@@ -241,8 +321,16 @@ class VertuoDevice:
             return
 
         _LOGGER.debug("%s: onboarding (state was %s)", self.name, state.name)
-        await self._client.write_gatt_char(CHAR_TX_LEVEL, bytes([1]), response=True)
-        await self._client.write_gatt_char(CHAR_CMID, self._secret, response=True)
+        await self._bounded(
+            self._client.write_gatt_char(CHAR_TX_LEVEL, bytes([1]), response=True),
+            GATT_TIMEOUT,
+            "setting the TX level",
+        )
+        await self._bounded(
+            self._client.write_gatt_char(CHAR_CMID, self._secret, response=True),
+            GATT_TIMEOUT,
+            "writing the pairing key",
+        )
         await asyncio.sleep(2)
 
         state = await self.read_pairing_state()
@@ -269,11 +357,15 @@ class VertuoDevice:
                 return
             assert self._client is not None
             try:
-                await self._client.start_notify(
-                    CHAR_MACHINE_STATUS, self._handle_status_notify
+                await self._bounded(
+                    self._client.start_notify(
+                        CHAR_MACHINE_STATUS, self._handle_status_notify
+                    ),
+                    GATT_TIMEOUT,
+                    "subscribing to MachineStatus",
                 )
                 self._notifying = True
-            except BleakError as err:
+            except (BleakError, VertuoTimeoutError) as err:
                 # Not fatal -- polling still works.
                 _LOGGER.debug("%s: could not subscribe to status: %s", self.name, err)
 
@@ -287,7 +379,11 @@ class VertuoDevice:
             client = self._client
 
             status = decode_machine_status(
-                await client.read_gatt_char(CHAR_MACHINE_STATUS)
+                await self._bounded(
+                    client.read_gatt_char(CHAR_MACHINE_STATUS),
+                    GATT_TIMEOUT,
+                    "reading MachineStatus",
+                )
             )
 
             if self._info is None:
@@ -327,8 +423,11 @@ class VertuoDevice:
         missing optional value must not fail the whole update.
         """
         try:
-            return decoder(bytes(await client.read_gatt_char(char)))
-        except (BleakError, ValueError) as err:
+            raw = await self._bounded(
+                client.read_gatt_char(char), GATT_TIMEOUT, f"reading {label}"
+            )
+            return decoder(bytes(raw))
+        except (BleakError, VertuoTimeoutError, ValueError) as err:
             _LOGGER.debug("%s: could not read %s: %s", self.name, label, err)
             return None
 
@@ -343,13 +442,23 @@ class VertuoDevice:
             await self._connect_locked()
             assert self._client is not None
             current = decode_user_settings(
-                bytes(await self._client.read_gatt_char(CHAR_USER_SETTINGS))
+                bytes(
+                    await self._bounded(
+                        self._client.read_gatt_char(CHAR_USER_SETTINGS),
+                        GATT_TIMEOUT,
+                        "reading user settings",
+                    )
+                )
             )
             updated = UserSettings(
                 auto_power_off_time=current.auto_power_off_time,
                 water_hardness=level,
                 standby_time=current.standby_time,
             )
-            await self._client.write_gatt_char(
-                CHAR_USER_SETTINGS, encode_user_settings(updated), response=True
+            await self._bounded(
+                self._client.write_gatt_char(
+                    CHAR_USER_SETTINGS, encode_user_settings(updated), response=True
+                ),
+                GATT_TIMEOUT,
+                "writing user settings",
             )
