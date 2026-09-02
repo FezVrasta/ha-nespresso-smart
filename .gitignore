@@ -1,0 +1,11 @@
+.venv/
+work/
+__pycache__/
+*.pyc
+*.xapk
+.ruff_cache/
+.pytest_cache/
+
+# Research tooling kept local: superseded by the browser method in the README
+tools/capture/
+tools/nespresso_api.py

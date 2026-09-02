@@ -1,0 +1,58 @@
+{
+  "domain": "nespresso_smart",
+  "name": "Nespresso Smart",
+  "bluetooth": [
+    {
+      "local_name": "CV1*"
+    },
+    {
+      "local_name": "DV1*"
+    },
+    {
+      "local_name": "CV2*"
+    },
+    {
+      "local_name": "DV2*"
+    },
+    {
+      "local_name": "CV3*"
+    },
+    {
+      "local_name": "DV3*"
+    },
+    {
+      "local_name": "CV5*"
+    },
+    {
+      "local_name": "DV5*"
+    },
+    {
+      "local_name": "CV6*"
+    },
+    {
+      "local_name": "DV6*"
+    },
+    {
+      "service_uuid": "06aa1910-f22a-11e3-9daa-0002a5d5c51b"
+    }
+  ],
+  "codeowners": [
+    "@FezVrasta"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "bluetooth",
+    "bluetooth_adapters"
+  ],
+  "documentation": "https://github.com/FezVrasta/ha-nespresso-smart",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/FezVrasta/ha-nespresso-smart/issues",
+  "loggers": [
+    "nespresso_smart"
+  ],
+  "requirements": [
+    "bleak-retry-connector>=3.5.0"
+  ],
+  "version": "0.1.0"
+}

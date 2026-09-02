@@ -1,0 +1,32 @@
+[tool.ruff]
+# Match Home Assistant core, so code lifted from or contributed back to HA
+# lints the same way here as it does there.
+line-length = 88
+target-version = "py312"
+exclude = ["work", ".venv"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    # Diagnostic tooling and the config flow legitimately reach into the BLE
+    # client's internals and catch broad exceptions to report rather than crash.
+    "BLE001",
+    "SLF001",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The probe builds a synthetic package before importing from it, so those
+# imports cannot sit at the top of the file.
+"tools/probe.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

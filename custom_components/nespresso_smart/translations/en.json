@@ -1,0 +1,147 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Nespresso Smart",
+        "description": "Choose the machine to add.",
+        "data": {
+          "address": "Machine"
+        }
+      },
+      "pair": {
+        "title": "Pair with {name}",
+        "description": "If the Nespresso app has ever paired with this machine, its pairing key is stored in your Nespresso account. Paste it below and the app keeps working.\n\nTo get it: log in at nespresso.com in a browser, open the DevTools console on that page, and run the snippet from the integration's README. It prints the pairingKey for each of your machines. It has to be a real browser, because those API calls reject scripted clients.\n\nLeave the field empty only if this machine has never been paired, or you have factory-reset it. Home Assistant will then generate and store a new key.",
+        "data": {
+          "pairing_seed": "Pairing seed (optional)"
+        },
+        "data_description": {
+          "pairing_seed": "32 hexadecimal characters. Leave empty to generate a new one."
+        }
+      }
+    },
+    "error": {
+      "invalid_seed": "That does not look like a pairing seed. It must be at least 15 hexadecimal characters (normally 32).",
+      "not_found": "The machine is not in range of any Bluetooth adapter or proxy.",
+      "cannot_connect": "Could not connect to the machine. Make sure it is powered on and not currently connected to the phone app.",
+      "auth_failed": "The machine rejected that pairing seed. It is bound to a different key.",
+      "already_paired": "This machine is already paired, most likely with the Nespresso phone app. Recover its existing pairing key from your Nespresso account (see the README) and paste it above; no reset needed. Factory-resetting the machine also works, but unpairs the app.",
+      "onboard_failed": "Pairing failed. Try moving the machine closer to the Bluetooth adapter, or power-cycle it and retry."
+    },
+    "abort": {
+      "already_configured": "This machine is already set up.",
+      "no_devices_found": "No Nespresso Smart machines found. Make sure the machine is powered on and in range of a Bluetooth adapter or proxy.",
+      "not_supported": "This machine is not supported by this integration."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "machine_state": {
+        "name": "State",
+        "state": {
+          "factory_reset": "Factory reset",
+          "heatup": "Heating up",
+          "ready": "Ready",
+          "descaling_ready": "Ready to descale",
+          "brewing": "Brewing",
+          "cleaning": "Cleaning",
+          "descaling": "Descaling",
+          "emptying": "Emptying",
+          "device_error": "Error",
+          "power_save": "Power save",
+          "cooldown": "Cooling down",
+          "service_mode": "Service mode",
+          "standby": "Standby",
+          "updating": "Updating",
+          "rinsing": "Rinsing",
+          "capsule_reading": "Reading capsule",
+          "descale_sequence_decoding": "Decoding descale sequence",
+          "tank_empty": "Water tank empty",
+          "descaling_paused": "Descaling paused",
+          "initialization": "Initialising",
+          "rinsing_ready": "Ready to rinse",
+          "maintenance_menu": "Maintenance menu",
+          "cleaning_paused": "Cleaning paused",
+          "emptying_ready": "Ready to empty",
+          "cleaning_ready": "Ready to clean",
+          "ready_old_capsule": "Ready (used capsule inside)",
+          "rinsing_paused": "Rinsing paused",
+          "unknown": "Unknown"
+        }
+      },
+      "water_hardness": {
+        "name": "Water hardness"
+      },
+      "serial_number": {
+        "name": "Serial number"
+      },
+      "firmware_version": {
+        "name": "Firmware version"
+      },
+      "connectivity_firmware_version": {
+        "name": "Connectivity firmware version"
+      },
+      "recipe_database_version": {
+        "name": "Recipe database version"
+      },
+      "water_tank": {
+        "name": "Water tank",
+        "state": {
+          "ok": "OK",
+          "empty": "Empty"
+        }
+      },
+      "capsule_container": {
+        "name": "Capsule container",
+        "state": {
+          "ok": "OK",
+          "full": "Full"
+        }
+      },
+      "descaling": {
+        "name": "Descaling",
+        "state": {
+          "not_needed": "Not needed",
+          "needed": "Needed"
+        }
+      },
+      "cleaning": {
+        "name": "Cleaning",
+        "state": {
+          "not_needed": "Not needed",
+          "needed": "Needed"
+        }
+      },
+      "error": {
+        "name": "Error",
+        "state": {
+          "none": "None",
+          "present": "Present"
+        }
+      },
+      "brewing_unit": {
+        "name": "Brewing unit",
+        "state": {
+          "closed": "Closed",
+          "open": "Open"
+        }
+      }
+    },
+    "binary_sensor": {
+      "brewing": {
+        "name": "Brewing"
+      },
+      "milk_frother_running": {
+        "name": "Milk frother running"
+      },
+      "bootloader_active": {
+        "name": "Bootloader active"
+      }
+    },
+    "number": {
+      "water_hardness": {
+        "name": "Water hardness"
+      }
+    }
+  }
+}

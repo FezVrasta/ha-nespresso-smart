@@ -1,0 +1,43 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - run: pip install ruff
+
+      - name: Lint
+        run: ruff check custom_components tools tests
+
+      - name: Format check
+        run: ruff format --check custom_components tools tests
+
+  test:
+    name: Protocol codec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - run: pip install pytest
+
+      # protocol.py is deliberately free of Home Assistant and bleak imports,
+      # so the codec tests need no extra dependencies.
+      - name: Run tests
+        run: pytest tests -q
