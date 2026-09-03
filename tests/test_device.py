@@ -180,6 +180,57 @@ def test_unbonded_write_refusal_gets_its_own_error(
     asyncio.run(scenario())
 
 
+def test_unbonded_read_refusal_is_not_blamed_on_another_controller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The protected read is refused on an unbonded link just like the write.
+
+    Reported as VertuoAuthError it reaches the user as "this machine is bound
+    to a different key" -- which sends someone with a valid key off to factory
+    reset their machine. It is transient; it has to stay retryable.
+    """
+    from bleak.exc import BleakError
+
+    client = FakeClient()
+
+    async def refuse_status(char: str) -> bytearray:
+        if char == device.CHAR_MACHINE_STATUS:
+            raise BleakError("[org.bluez.Error.NotPermitted] Not paired")
+        return bytearray(4)
+
+    client.read_gatt_char = refuse_status  # type: ignore[method-assign]
+    dev = _make_device(monkeypatch, client)
+
+    async def scenario() -> None:
+        with pytest.raises(device.VertuoNotBondedError):
+            await dev.connect()
+
+    asyncio.run(scenario())
+
+
+def test_genuinely_rejected_key_still_reports_an_auth_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refusal that is *not* about bonding must stay an auth failure."""
+    from bleak.exc import BleakError
+
+    client = FakeClient()
+
+    async def refuse_status(char: str) -> bytearray:
+        if char == device.CHAR_MACHINE_STATUS:
+            raise BleakError("[org.bluez.Error.NotPermitted] Write not permitted")
+        return bytearray(4)
+
+    client.read_gatt_char = refuse_status  # type: ignore[method-assign]
+    dev = _make_device(monkeypatch, client)
+
+    async def scenario() -> None:
+        with pytest.raises(device.VertuoAuthError):
+            await dev.connect()
+
+    asyncio.run(scenario())
+
+
 def test_hanging_read_raises_rather_than_stalling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

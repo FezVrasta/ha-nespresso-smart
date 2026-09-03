@@ -81,10 +81,12 @@ class VertuoTimeoutError(VertuoError):
 
 
 class VertuoNotBondedError(VertuoError):
-    """The link is not encrypted yet, so the machine refused the write.
+    """The link is not encrypted yet, so a protected read or write was refused.
 
     Transient: the refusal itself prompts the stack to bond, so retrying the
-    connection generally succeeds. See VertuoDevice._bond.
+    connection generally succeeds. Distinct from VertuoAuthError precisely
+    because it says nothing about whether our key is the right one.
+    See VertuoDevice._bond.
     """
 
 
@@ -286,6 +288,25 @@ class VertuoDevice:
                 ) from err
             raise
 
+    async def _read(self, char: str, what: str) -> bytearray:
+        """Read a characteristic, naming BlueZ's unencrypted-link refusal.
+
+        The counterpart to _write: the protected characteristics are refused
+        on an unbonded link in both directions, so a read can be transient
+        for exactly the same reason a write can.
+        """
+        assert self._client is not None
+        try:
+            return await self._bounded(
+                self._client.read_gatt_char(char), GATT_TIMEOUT, what
+            )
+        except BleakError as err:
+            if "not paired" in str(err).lower():
+                raise VertuoNotBondedError(
+                    f"{what} needs a bonded connection: {err}"
+                ) from err
+            raise
+
     async def _authenticate(self) -> None:
         """Write the pairing secret to the CMID characteristic."""
         assert self._client is not None
@@ -295,16 +316,17 @@ class VertuoDevice:
             raise VertuoAuthError(f"writing pairing key failed: {err}") from err
 
         # Prove it worked: MachineStatus is only readable once authenticated.
+        # Read through _read, so that a refusal for want of a bond stays a
+        # VertuoNotBondedError and gets retried, rather than being reported as
+        # "this machine belongs to someone else" -- a conclusion this failure
+        # does not actually support.
         try:
-            await self._bounded(
-                self._client.read_gatt_char(CHAR_MACHINE_STATUS),
-                GATT_TIMEOUT,
-                "reading MachineStatus",
-            )
+            await self._read(CHAR_MACHINE_STATUS, "reading MachineStatus")
         except BleakError as err:
             raise VertuoAuthError(
-                "machine rejected our pairing key -- it is most likely bound to "
-                "another controller; factory-reset the machine to re-pair"
+                f"the machine did not accept our pairing key ({err}). It is most "
+                "likely bound to a different key, though a dropped link looks the "
+                "same from here -- retry before factory-resetting the machine"
             ) from err
 
     async def disconnect(self) -> None:
@@ -327,11 +349,7 @@ class VertuoDevice:
         """Read CMIDType. Readable without authentication."""
         if self._client is None:
             raise VertuoError("not connected")
-        data = await self._bounded(
-            self._client.read_gatt_char(CHAR_CMID_TYPE),
-            GATT_TIMEOUT,
-            "reading the pairing state",
-        )
+        data = await self._read(CHAR_CMID_TYPE, "reading the pairing state")
         return decode_pairing_key_state(data)
 
     @staticmethod
@@ -403,11 +421,7 @@ class VertuoDevice:
             client = self._client
 
             status = decode_machine_status(
-                await self._bounded(
-                    client.read_gatt_char(CHAR_MACHINE_STATUS),
-                    GATT_TIMEOUT,
-                    "reading MachineStatus",
-                )
+                await self._read(CHAR_MACHINE_STATUS, "reading MachineStatus")
             )
 
             if self._info is None:
@@ -444,14 +458,18 @@ class VertuoDevice:
         """Read a non-essential characteristic; log and return None on failure.
 
         Not every model in the family exposes every characteristic, and a
-        missing optional value must not fail the whole update.
+        missing optional value must not fail the whole update -- including
+        one this machine happens to protect more tightly than the rest.
         """
         try:
-            raw = await self._bounded(
-                client.read_gatt_char(char), GATT_TIMEOUT, f"reading {label}"
-            )
+            raw = await self._read(char, f"reading {label}")
             return decoder(bytes(raw))
-        except (BleakError, VertuoTimeoutError, ValueError) as err:
+        except (
+            BleakError,
+            VertuoTimeoutError,
+            VertuoNotBondedError,
+            ValueError,
+        ) as err:
             _LOGGER.debug("%s: could not read %s: %s", self.name, label, err)
             return None
 
@@ -466,13 +484,7 @@ class VertuoDevice:
             await self._connect_locked()
             assert self._client is not None
             current = decode_user_settings(
-                bytes(
-                    await self._bounded(
-                        self._client.read_gatt_char(CHAR_USER_SETTINGS),
-                        GATT_TIMEOUT,
-                        "reading user settings",
-                    )
-                )
+                bytes(await self._read(CHAR_USER_SETTINGS, "reading user settings"))
             )
             updated = UserSettings(
                 auto_power_off_time=current.auto_power_off_time,

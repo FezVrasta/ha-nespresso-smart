@@ -26,7 +26,7 @@
       "cannot_connect": "Could not connect to the machine. Make sure it is powered on and not currently connected to the phone app.",
       "timeout": "The machine stopped responding part-way through. Close the Nespresso phone app so it is not holding the connection, make sure the machine is awake and near the Bluetooth adapter, then try again.",
       "not_bonded": "The machine would not accept a connection that is not Bluetooth-bonded, and bonding did not complete. Power-cycle the machine and try again; if it keeps failing, remove the machine from your host's Bluetooth device list (on Home Assistant OS: bluetoothctl remove) so it can bond afresh.",
-      "auth_failed": "The machine rejected that pairing seed. It is bound to a different key.",
+      "auth_failed": "The machine did not accept that pairing seed. Most often it is bound to a different key — but first check that you copied the whole pairingKey for this machine, and try once more, because a Bluetooth link that drops mid-handshake fails the same way. Turn on debug logging for this integration to see the underlying error.",
       "already_paired": "This machine is already paired, most likely with the Nespresso phone app. Recover its existing pairing key from your Nespresso account (see the README) and paste it above; no reset needed. Factory-resetting the machine also works, but unpairs the app.",
       "onboard_failed": "Pairing failed. Try moving the machine closer to the Bluetooth adapter, or power-cycle it and retry."
     },
