@@ -208,6 +208,45 @@ def test_unbonded_read_refusal_is_not_blamed_on_another_controller(
     asyncio.run(scenario())
 
 
+def test_failed_authentication_tears_the_link_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A half-open link must not survive a failed authenticate.
+
+    _connect_locked() short-circuits on `is_connected`, so a client left set
+    after a failed auth means the pairing key is never written again on that
+    link: every later poll reads a characteristic the machine will not serve.
+    The retry design depends on the next connect actually reconnecting.
+    """
+    from bleak.exc import BleakError
+
+    client = FakeClient()
+    state = {"reads": 0}
+
+    async def refuse_first_status(char: str) -> bytearray:
+        if char == device.CHAR_MACHINE_STATUS:
+            state["reads"] += 1
+            if state["reads"] == 1:
+                raise BleakError("[org.bluez.Error.NotPermitted] Not paired")
+        return bytearray(8)
+
+    client.read_gatt_char = refuse_first_status  # type: ignore[method-assign]
+    dev = _make_device(monkeypatch, client)
+
+    async def scenario() -> None:
+        with pytest.raises(device.VertuoNotBondedError):
+            await dev.update()
+        # The failure released the link rather than parking a useless one.
+        assert not dev.is_connected
+        assert not client.is_connected
+        # ...so this genuinely reconnects and writes the key again.
+        await dev.update()
+
+    asyncio.run(scenario())
+
+    assert [char for char, _ in client.writes] == [device.CHAR_CMID] * 2
+
+
 def test_genuinely_rejected_key_still_reports_an_auth_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

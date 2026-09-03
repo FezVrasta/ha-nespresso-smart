@@ -202,7 +202,11 @@ class VertuoDevice:
                 disconnected_callback=self._on_disconnect,
                 timeout=DEFAULT_TIMEOUT,
             )
-            await self._bond()
+            try:
+                await self._bond()
+            except BaseException:
+                await self._disconnect_locked()
+                raise
 
     async def authenticate(self) -> None:
         """Write the pairing key on an already-open connection."""
@@ -222,8 +226,19 @@ class VertuoDevice:
             timeout=DEFAULT_TIMEOUT,
         )
 
-        await self._bond()
-        await self._authenticate()
+        # Tear the link down if it does not come up fully authenticated.
+        # Otherwise self._client stays set and connected, every later call
+        # short-circuits on `if self.is_connected` above, and the pairing key
+        # is never written again on this link -- so a single failure here
+        # would wedge the device until the config entry is reloaded. That
+        # matters most for the one failure this integration *expects*: the
+        # unbonded-link refusal, whose whole design is that a retry fixes it.
+        try:
+            await self._bond()
+            await self._authenticate()
+        except BaseException:
+            await self._disconnect_locked()
+            raise
 
     async def _bond(self) -> None:
         """Establish an SMP bond, without ever blocking on one.
@@ -331,17 +346,34 @@ class VertuoDevice:
 
     async def disconnect(self) -> None:
         async with self._lock:
-            if self._client is not None:
-                try:
-                    await self._bounded(
-                        self._client.disconnect(),
-                        DISCONNECT_TIMEOUT,
-                        "disconnecting",
-                    )
-                except (BleakError, VertuoTimeoutError) as err:
-                    _LOGGER.debug("%s: error on disconnect: %s", self.name, err)
-                self._client = None
-            self._notifying = False
+            await self._disconnect_locked()
+
+    async def _disconnect_locked(self) -> None:
+        """Close the link. Callers must already hold the lock.
+
+        The reference is dropped whatever happens, including on a timeout.
+        Holding on to a client we failed to close would make is_connected
+        keep answering True and short-circuit the next connect, which is the
+        wedge described in _connect_locked -- strictly worse than letting
+        establish_connection sort out a link BlueZ may not have released.
+        """
+        client, self._client = self._client, None
+        self._notifying = False
+        if client is None:
+            return
+        try:
+            await self._bounded(
+                client.disconnect(), DISCONNECT_TIMEOUT, "disconnecting"
+            )
+        except VertuoTimeoutError as err:
+            _LOGGER.warning(
+                "%s: disconnect did not complete (%s); the adapter may still "
+                "hold the link",
+                self.name,
+                err,
+            )
+        except BleakError as err:
+            _LOGGER.debug("%s: error on disconnect: %s", self.name, err)
 
     # --- onboarding ------------------------------------------------------
 
@@ -418,7 +450,6 @@ class VertuoDevice:
         async with self._lock:
             await self._connect_locked()
             assert self._client is not None
-            client = self._client
 
             status = decode_machine_status(
                 await self._read(CHAR_MACHINE_STATUS, "reading MachineStatus")
@@ -426,11 +457,11 @@ class VertuoDevice:
 
             if self._info is None:
                 self._info = await self._read_optional(
-                    client, CHAR_MACHINE_INFO, decode_machine_info, "machine info"
+                    CHAR_MACHINE_INFO, decode_machine_info, "machine info"
                 )
             if self._serial is None:
                 raw = await self._read_optional(
-                    client, CHAR_SERIAL_NUMBER, bytes, "serial number"
+                    CHAR_SERIAL_NUMBER, bytes, "serial number"
                 )
                 if raw is not None:
                     self._serial = raw.split(b"\x00", 1)[0].decode(
@@ -438,7 +469,7 @@ class VertuoDevice:
                     )
 
             settings = await self._read_optional(
-                client, CHAR_USER_SETTINGS, decode_user_settings, "user settings"
+                CHAR_USER_SETTINGS, decode_user_settings, "user settings"
             )
 
             return VertuoData(
@@ -450,7 +481,6 @@ class VertuoDevice:
 
     async def _read_optional(
         self,
-        client: BleakClient,
         char: str,
         decoder: Callable[[bytes], object],
         label: str,

@@ -86,10 +86,29 @@ class VertuoCoordinator(DataUpdateCoordinator[VertuoData]):
             data = await device.update()
             await device.start_notifications()
         except VertuoError as err:
+            await self._drop_link()
             raise UpdateFailed(str(err)) from err
         except Exception as err:
+            await self._drop_link()
             raise UpdateFailed(f"Error communicating with the machine: {err}") from err
         return data
+
+    async def _drop_link(self) -> None:
+        """Close the connection after a failed poll.
+
+        A Vertuo accepts one connection at a time, so a link left open is not
+        merely untidy -- it locks out the retry that is meant to recover. That
+        bites hardest on the very first refresh: if it fails, Home Assistant
+        never assigns runtime_data, so async_unload_entry and async_shutdown
+        never run, and the abandoned connection blocks every setup retry that
+        follows.
+        """
+        if self._device is None:
+            return
+        try:
+            await self._device.disconnect()
+        except Exception as err:
+            _LOGGER.debug("Error closing the link after a failed poll: %s", err)
 
     async def async_shutdown(self) -> None:
         await super().async_shutdown()
